@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+env/
+venv/
+
+# Audio
+*.wav
+
+# Models
+models/
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# Cache
+.cache/
