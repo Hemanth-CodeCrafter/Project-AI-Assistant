@@ -35,6 +35,37 @@ class Router:
         if intent == "volume_down":     return volume_down()
         if intent == "mute":            return mute()
         return None
+    
+    def optimize_intents(self, intents):
+        """
+        Remove redundant intents.
+
+        Example:
+        open_youtube + youtube_search
+        -> keep only youtube_search
+        """
+
+        intent_names = {i[0] for i in intents}
+
+        optimized = []
+
+        for intent, query, entities in intents:
+
+            # Search already opens YouTube
+            if intent == "open_youtube" and "youtube_search" in intent_names:
+                continue
+
+            # Search already opens Google
+            if intent == "open_google" and "google_search" in intent_names:
+                continue
+
+            # Spotify search/play already opens Spotify
+            if intent == "open_spotify" and "play_music" in intent_names:
+                continue
+
+            optimized.append((intent, query, entities))
+
+        return optimized
 
     def route(self, command):
         """
@@ -47,6 +78,8 @@ class Router:
         """
         intents = classify_all(command)
 
+        intents = self.optimize_intents(intents)
+        
         # Everything is LLM
         if all(i[0] == "llm" for i in intents):
             return None

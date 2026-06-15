@@ -317,6 +317,21 @@ def classify(command: str):
         return "shutdown_pc", None, ents
 
     return None, None, ents
+def normalize_command(text: str):
+        text = text.lower().strip()
+
+        replacements = {
+            "open youtube search": "open youtube and search",
+            "open google search": "open google and search",
+            "open spotify play": "open spotify and play",
+            "open hotstar play": "open hotstar and play",
+            "open chrome search": "open chrome and search",
+        }
+
+        for old, new in replacements.items():
+            text = text.replace(old, new)
+
+        return text
 
 # ── Multi-intent classifier ───────────────────────
 def classify_all(command: str):
@@ -324,6 +339,7 @@ def classify_all(command: str):
     Split → inject context → classify each part.
     Returns list of (intent, query, entities)
     """
+    command = normalize_command(command)
     parts    = split_into_commands(command)
     enriched = inject_context(parts)
     results  = []
