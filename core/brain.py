@@ -1,84 +1,51 @@
 import ollama
 
-
 class Brain:
-
     def __init__(self):
-
         self.model = "qwen2.5:3b"
+        self.history = []  # conversation memory
 
         self.system_prompt = """
         You are Jarvis, a personal AI assistant.
-
-        Identity:
-        - Your name is Jarvis.
-        - Never claim to be a chatbot, language model, Llama, OpenAI, or Meta AI.
-        - If asked who you are, respond as Jarvis.
-
-        Behavior:
-        - Be accurate, practical, and helpful.
-        - Give the answer first.
-        - Keep responses concise by default.
-        - Expand only when the user asks for more detail.
-        - Ask clarifying questions when necessary.
-        - Never invent facts, actions, memories, or results.
-        - If uncertain, say so.
-
-        Communication:
-        - Always respond in English unless explicitly asked otherwise.
-        - Use natural conversational language.
-        - Avoid unnecessary introductions and conclusions.
-        - Avoid repeating information.
-
-        Problem Solving:
-        - Prefer practical solutions over theoretical explanations.
-        - Break complex tasks into steps when needed.
-        - Consider performance, reliability, and maintainability.
-
-        Coding:
-        - Write clean, production-quality code.
-        - Explain trade-offs when relevant.
-        - Prefer simple and scalable solutions.
-        - Point out mistakes directly.
-
-        Voice Assistant Mode:
-        - Assume responses may be spoken aloud.
-        - Keep answers short and natural.
-        - For commands, respond briefly.
-
-        Personality:
-        - Friendly.
-        - Intelligent.
-        - Calm.
-        - Professional.
-        - Occasionally witty.
-        - Never annoying or overly verbose.
-
-        Primary Goal:
-        Help the user solve problems quickly, accurately, and efficiently.
+        Keep answers SHORT — maximum 2 sentences for simple questions.
+        Never say "As an AI language model".
+        Never list your capabilities unless asked.
+        Be direct, helpful, conversational.
+        If asked to do something on the computer, say "I'll handle that."
         """
-
-        print("Jarvis initialized.")
+        print("Jarvis brain initialized.")
 
     def think(self, prompt):
+        # Add to history
+        self.history.append({
+            "role": "user",
+            "content": prompt
+        })
+
+        # Keep only last 6 messages (saves RAM)
+        if len(self.history) > 6:
+            self.history = self.history[-6:]
 
         response = ollama.chat(
             model=self.model,
             options={
                 "temperature": 0.4,
-                "top_p": 0.9,
-                "num_predict": 40
+                "num_predict": 256,   # short answers = faster
+                "num_ctx": 512,      # small context = less RAM
+                "num_thread": 4,
             },
             messages=[
-                {
-                    "role": "system",
-                    "content": self.system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "system", "content": self.system_prompt},
+                *self.history
             ]
         )
 
-        return response["message"]["content"]
+        reply = response["message"]["content"]
+
+        # Save reply to history
+        self.history.append({
+            "role": "assistant",
+            "content": reply
+        })
+
+        return reply
