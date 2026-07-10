@@ -7,11 +7,15 @@ import random
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
-from core.brain     import Brain
-from core.router    import Router
-from core.stt       import SpeechToText
-from core.recorder  import Recorder
-from core.wake_word import WakeWordDetector
+from dotenv                   import load_dotenv
+from core.brain               import Brain
+from core.router              import Router
+from core.stt                 import SpeechToText
+from core.recorder            import Recorder
+from core.wake_word           import WakeWordDetector
+from core.conversation_memory import conversation_memory
+from core.memory_manager      import memory_manager
+
 
 # ── TTS — init ONCE, reuse ────────────────────────
 # Reinitializing every speak() call was causing lag
@@ -34,21 +38,25 @@ GREETINGS = [
     "How can I help?",
 ]
 
+
+
 FAREWELLS = [
     "Goodbye! Have a great day.",
     "See you soon sir.",
     "Take care. Goodbye!",
 ]
 
-THINKING = [
-    "Let me think...",
-    "One moment...",
-    "Sure, give me a second...",
-]
+# THINKING = [
+#     "Let me think...",
+#     "One moment...",
+#     "Sure, give me a second...",
+# ]
 
 SESSION_TIMEOUT = 30   # seconds of silence before returning to wake word
 AUDIO_PATH      = "data/recordings/command.wav"
 os.makedirs("data/recordings", exist_ok=True)
+
+load_dotenv()
 
 # ── TTS ───────────────────────────────────────────
 def speak(text):
@@ -103,14 +111,49 @@ def process_command(command, router, brain):
 
     print(f"\n👤 You: {command}")
 
+    # Save important memories
+    memory_manager.remember(command)
+
+    # Search related memories
+    memories = memory_manager.search(command)
+    # Resolve follow-up questions
+    command = conversation_memory.resolve(command)
+
+    topic = conversation_memory.extract_topic(command)
+
+    if topic:
+        conversation_memory.set_topic(topic)
+
+    conversation_memory.add(command)
+
     # Try router first — instant, no LLM
     result = router.route(command)
 
     if result is None:
         # Nothing matched — send full command to LLM
+        if memories:
+
+            memory_text = "\n".join(
+                f"- {m[0]}"
+                for m in memories
+            )
+
+            prompt = f"""
+        Relevant memories:
+
+        {memory_text}
+
+        User:
+        {command}
+        """
+
+        else:
+            prompt = command
+
         print("🤖 Sending to brain...")
-        speak(random.choice(THINKING))
-        return brain.think(command)
+        #speak(random.choice(THINKING))
+        response = brain.think(command)
+        return response
 
     # Router returned a dict with responses + llm_parts
     responses = result.get("responses", [])
@@ -119,8 +162,30 @@ def process_command(command, router, brain):
     # Handle any LLM parts from multi-intent
     for part in llm_parts:
         print(f"🤖 Brain handling: {part}")
-        speak(random.choice(THINKING))
-        llm_response = brain.think(part)
+        #speak(random.choice(THINKING))
+        memories = memory_manager.search(part)
+
+        if memories:
+
+            memory_text = "\n".join(
+                f"- {m[0]}"
+                for m in memories
+            )
+
+            prompt = f"""
+        Relevant memories:
+
+        {memory_text}
+
+        User:
+        {part}
+        """
+
+        else:
+            prompt = part
+
+        llm_response = brain.think(prompt)
+        
         if llm_response:
             responses.append(llm_response)
 
@@ -205,7 +270,7 @@ def run_with_wakeword(stt, recorder, brain, router):
 
                 if response:
                     speak(response)
-                    last_activity = time.time()  # reset timer
+                    last_activity = time.time() # reset timer
 
                 # Stay in session — loop back for next command
 
@@ -305,6 +370,7 @@ if __name__ == "__main__":
     # python main.py voice  → press enter to speak
 
     mode = sys.argv[1] if len(sys.argv) > 1 else "wake"
+    #mode = "text"
 
     stt, recorder, brain, router = initialize()
 
