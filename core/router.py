@@ -1,10 +1,67 @@
 # core/router.py
 from core.actions import *
 from core.intent_classifier import classify_all
+from core.device_manager import DeviceManager
+from core.device_actions import (
+    execute_on_mobile,
+    execute_on_tv
+)
+from core.context_manager import context_manager
+from core.pronoun_resolver import resolve
+
+device_manager = DeviceManager()
+
+APP_MAP = {
+    "open_youtube": "youtube",
+    "youtube_search": "youtube",
+    "close_youtube": "youtube",
+
+    "open_google": "chrome",
+    "google_search": "chrome",
+
+    "open_chrome": "chrome",
+    "close_chrome": "chrome",
+
+    "open_spotify": "spotify",
+    "play_music": "spotify",
+    "close_spotify": "spotify",
+
+    "open_vscode": "vscode",
+    "close_vscode": "vscode",
+
+    "open_notepad": "notepad",
+    "close_notepad": "notepad",
+
+    "open_calculator": "calculator",
+    "open_files": "explorer",
+    "open_whatsapp": "whatsapp",
+    "open_maps": "maps",
+}
 
 class Router:
 
     def execute_intent(self, intent, query, entities):
+        device = entities.get(
+            "DEVICE",
+            device_manager.get_active_device()
+        )
+        
+        app = APP_MAP.get(intent)
+
+        context_manager.update(
+            app=app,
+            intent=intent,
+            query=query,
+            device=device
+        )
+
+        print(
+            "Context:",
+            context_manager.context
+        )
+        
+        print(f"Executing on: {device}")
+
         if intent == "tell_time":       return tell_time()
         if intent == "world_time":
             return world_time(query)
@@ -13,8 +70,35 @@ class Router:
         if intent == "screenshot":      return take_screenshot()
         if intent == "take_screenshot": return take_screenshot()
         if intent == "shutdown_pc":     return shutdown_pc()
-        if intent == "open_youtube":    return open_youtube()
-        if intent == "open_google":     return open_google()
+
+        if intent == "open_youtube":
+            if device == "laptop":
+                return open_youtube()
+
+            if device == "mobile":
+                return execute_on_mobile(
+                    "open_youtube"
+                )
+
+            if device == "tv":
+                return execute_on_tv(
+                    "open_youtube"
+                )
+        
+        if intent == "open_google":
+            if device == "laptop":
+                return open_google()
+
+            if device == "mobile":
+                return execute_on_mobile(
+                    "open_google"
+                )
+
+            if device == "tv":
+                return execute_on_tv(
+                    "open_google"
+                )
+        
         if intent == "open_whatsapp":   return open_whatsapp()
         if intent == "open_maps":       return open_maps()
         if intent == "open_vscode":     return open_vscode()
@@ -76,6 +160,10 @@ class Router:
         }
         Or None if everything goes to LLM.
         """
+
+        command = resolve(command)
+        print("Resolved command:", command)
+
         intents = classify_all(command)
 
         intents = self.optimize_intents(intents)

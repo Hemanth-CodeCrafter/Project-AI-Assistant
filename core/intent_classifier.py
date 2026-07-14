@@ -20,6 +20,16 @@ INTENT_REMOVE_WORDS = {
     "open_app":       ["open", "launch", "start"],
 }
 
+DEVICE_KEYWORDS = {
+    "tv": "tv",
+    "television": "tv",
+    "mobile": "mobile",
+    "phone": "mobile",
+    "laptop": "laptop",
+    "computer": "laptop",
+    "pc": "laptop"
+}
+
 # ── Context-injectable verbs ───────────────────────
 # Only inject previous context for these verbs
 # Fixes: "tell me the time on youtube"
@@ -34,6 +44,7 @@ TARGET_KEYWORDS = {
     "vs code":   "vscode",
     "vscode":    "vscode",
     "youtube":   "youtube",
+    "yt":        "youtube",
     "google":    "google",
     "spotify":   "spotify",
     "maps":      "maps",
@@ -54,12 +65,22 @@ NO_INJECT_INTENTS = [
 ]
 
 # ── Helpers ───────────────────────────────────────
-def fuzzy_match(text, phrases, threshold=80):
+def fuzzy_match(text, phrases, threshold=95):
     for phrase in phrases:
-        if fuzz.partial_ratio(phrase, text) >= threshold:
+        phrase = phrase.lower()
+
+        if phrase == text:
             return True
-        if all(w in text for w in phrase.split()):
+
+        if fuzz.ratio(
+            phrase,
+            text
+        ) >= threshold:
             return True
+        # if fuzz.partial_ratio(phrase, text) >= threshold:
+        #     return True
+        # if all(w in text for w in phrase.split()):
+        #     return True
     return False
 
 def has_phrase(text, phrases):
@@ -91,9 +112,29 @@ def extract_entities(doc):
 
 def extract_query(doc, remove_words):
     stop = set(w.lower() for w in remove_words) | {
-        "the", "a", "an", "please", "can",
-        "you", "could", "would", "jarvis", "hey"
+        "the",
+        "a",
+        "an",
+        "please",
+        "can",
+        "you",
+        "could",
+        "would",
+        "jarvis",
+        "hey",
+
+        # Device words
+        "on",
+        "in",
+        "tv",
+        "television",
+        "mobile",
+        "phone",
+        "laptop",
+        "computer",
+        "pc"
     }
+
     words = [
         t.text for t in doc
         if t.text.lower() not in stop
@@ -108,6 +149,18 @@ def detect_target(text):
                           key=len, reverse=True):
         if keyword in text:
             return TARGET_KEYWORDS[keyword]
+    return None
+
+def detect_device(text):
+
+    for keyword, device in DEVICE_KEYWORDS.items():
+
+        if f" on {keyword}" in text:
+            return device
+
+        if f" in {keyword}" in text:
+            return device
+
     return None
 
 # ── Splitter ──────────────────────────────────────
@@ -347,10 +400,18 @@ def classify_all(command: str):
     print(f"\n  [multi-intent] {enriched}")
 
     for part in enriched:
+        print("PART:", part)
         intent, query, ents = classify(part)
+        print("INTENT:", intent)
+
+        device = detect_device(part)
+
+        if device:
+            ents["DEVICE"] = device
+
         if intent:
             results.append((intent, query, ents))
         else:
-            results.append(("llm", part, {}))
+            results.append(("llm", part, ents))
 
     return results
