@@ -10,7 +10,52 @@ class ConversationMemory:
 
     def __init__(self):
         self.last_topic = None
+        self.last_person = None
+        self.last_entity = None
         self.history = []
+
+    def _normalize_topic(self, topic):
+        if topic is None:
+            return None
+
+        cleaned = re.sub(r"\s+", " ", str(topic).strip())
+        cleaned = cleaned.strip(" .,!?:;")
+        return cleaned or None
+
+    def _is_command_like(self, text):
+        if not text:
+            return False
+
+        command_verbs = [
+            "open", "close", "start", "launch", "stop", "exit",
+            "quit", "play", "pause", "search", "find", "look",
+            "watch", "listen", "navigate", "show", "take", "use"
+        ]
+        return any(text.startswith(f"{verb} ") for verb in command_verbs)
+
+
+
+    def _extract_question_subject(self, text):
+        if not text:
+            return None
+
+        normalized = re.sub(r"\s+", " ", str(text).strip()).lower()
+        patterns = [
+            r"\bwhat(?:'s)?\s+(?:is|are|was|were)\s+(.+)$",
+            r"\bwho\s+(?:is|was|were)\s+(.+)$",
+            r"\bwhich\s+(?:is|are|was|were)\s+(.+)$",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, normalized)
+            if match:
+                candidate = match.group(1).strip()
+                candidate = re.sub(r"^(?:the|a|an)\s+", "", candidate)
+                candidate = re.sub(r"\s+", " ", candidate).strip(" .,!?:;")
+                if candidate and candidate not in {"it", "this", "that", "these", "those", "he", "she", "they"}:
+                    return candidate
+
+        return None
 
     # ------------------------
     # Conversation History
@@ -35,20 +80,47 @@ class ConversationMemory:
     # Topic Management
     # ------------------------
     def set_topic(self, topic):
-        self.last_topic = topic
+        normalized = self._normalize_topic(topic)
+        if not normalized:
+            return
+        self.last_topic = normalized
 
     def get_topic(self):
         return self.last_topic
 
     def clear_topic(self):
         self.last_topic = None
+        self.last_person = None
+        self.last_entity = None
+    
+    def update_entities(self, text):
+        """
+        Update conversational entities from assistant replies.
+        """
+
+        if not text:
+            return
+
+        doc = nlp(str(text))
+
+        for ent in doc.ents:
+            self.last_entity = ent.text
+
+            if ent.label_ == "PERSON":
+                self.last_person = ent.text
 
     # ------------------------
     # Topic Extraction
     # ------------------------
     def extract_topic(self, text):
+        if not text:
+            return None
 
-        doc = nlp(text)
+        normalized_text = re.sub(r"\s+", " ", str(text).strip()).lower()
+        if self._is_command_like(normalized_text):
+            return None
+
+        doc = nlp(str(text))
 
         # Prefer named entities
         for ent in doc.ents:
@@ -61,19 +133,17 @@ class ConversationMemory:
                 "EVENT",
                 "WORK_OF_ART"
             ]:
-                return ent.text
+                return self._normalize_topic(ent.text)
 
-        # Fallback:
-        # use last noun phrase
-
+        # Fallback: use last noun phrase
         noun_chunks = list(doc.noun_chunks)
 
         if noun_chunks:
             for chunk in reversed(noun_chunks):
+                candidate = chunk.text.strip()
+                candidate_norm = candidate.lower().strip()
 
-                text = chunk.text.lower().strip()
-
-                if text not in [
+                if candidate_norm in [
                     "what",
                     "who",
                     "where",
@@ -82,9 +152,18 @@ class ConversationMemory:
                     "how",
                     "it",
                     "this",
-                    "that"
+                    "that",
+                    "these",
+                    "those",
+                    "them",
+                    "he",
+                    "she",
+                    "they"
                 ]:
-                    return chunk.text
+                    continue
+
+                if len(candidate.split()) <= 2:
+                    return self._normalize_topic(candidate)
 
         return None
 
@@ -92,25 +171,40 @@ class ConversationMemory:
     # Resolve follow-up questions
     # ------------------------
     def resolve(self, text):
+        topic = self.last_topic
+        person = self.last_person
 
-        topic = self.get_topic()
-
-        if not topic:
+        if not topic and not person:
             return text
 
-        resolved = text.lower()
+        resolved = str(text).strip()
 
-        replacements = {
-            r"\bhe\b": topic,
-            r"\bshe\b": topic,
-            r"\bhim\b": topic,
-            r"\bher\b": topic,
-            r"\bit\b": topic,
-            r"\bthey\b": topic,
-            r"\bthem\b": topic,
-            r"\bthat\b": topic,
-            r"\bthis\b": topic
-        }
+        if not resolved:
+            return text
+        
+        topic_text = str(topic).strip() if topic else ""
+        person_text = str(person).strip() if person else ""
+
+        replacements = {}
+
+        if person_text:
+            replacements.update({
+                r"\bhe\b": person_text,
+                r"\bshe\b": person_text,
+                r"\bhim\b": person_text,
+                r"\bher\b": person_text,
+            })
+
+        if topic_text:
+            replacements.update({
+                r"\bit\b": topic_text,
+                r"\bthat\b": topic_text,
+                r"\bthis\b": topic_text,
+                r"\bthese\b": topic_text,
+                r"\bthose\b": topic_text,
+                r"\bthey\b": topic_text,
+                r"\bthem\b": topic_text,
+            })
 
         for pattern, replacement in replacements.items():
             resolved = re.sub(
@@ -122,6 +216,3 @@ class ConversationMemory:
 
         return resolved
 
-
-# Global instance
-conversation_memory = ConversationMemory()

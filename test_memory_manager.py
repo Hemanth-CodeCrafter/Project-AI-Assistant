@@ -1,16 +1,22 @@
-from core.memory_manager import memory_manager
-from core.memory_db import memory_db
+from core.memory_manager import MemoryManager
+from core.memory_db import MemoryDB
 
-memory_manager.remember(
+# Instantiate the dependencies
+db = MemoryDB()
+memory_manager_instance = MemoryManager(db=db)
+
+# Use the instance to test the remember method
+memory_manager_instance.remember(
     "My name is Hemanth"
 )
 
-memory_manager.remember(
+memory_manager_instance.remember(
     "I like Python"
 )
 
-memory_manager.remember(
+memory_manager_instance.remember(
     "I had tea today"
 )
 
-print(memory_db.get_all())
+# Verify the results using the db instance
+print(db.get_all())

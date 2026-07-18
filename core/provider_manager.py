@@ -35,7 +35,7 @@ class ProviderManager:
             ].chat(prompt)
 
         except Exception as e:
-            print(f"Gemini failed: {e}")
+            print("Gemini failed")
 
         try:
             self.current_provider = "groq"
@@ -45,7 +45,7 @@ class ProviderManager:
             ].chat(prompt)
 
         except Exception as e:
-            print(f"Groq failed: {e}")
+            print("Groq failed")
 
         # Final fallback
         self.current_provider = "ollama"

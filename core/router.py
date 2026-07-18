@@ -6,8 +6,8 @@ from core.device_actions import (
     execute_on_mobile,
     execute_on_tv
 )
-from core.context_manager import context_manager
-from core.pronoun_resolver import resolve
+from core.context_manager import ContextManager
+from typing import Optional
 
 device_manager = DeviceManager()
 
@@ -39,6 +39,8 @@ APP_MAP = {
 }
 
 class Router:
+    def __init__(self, context_manager: Optional[ContextManager] = None):
+        self._context_manager = context_manager or ContextManager()
 
     def execute_intent(self, intent, query, entities):
         device = entities.get(
@@ -48,19 +50,13 @@ class Router:
         
         app = APP_MAP.get(intent)
 
-        context_manager.update(
+        self._context_manager.update(
             app=app,
             intent=intent,
             query=query,
             device=device
         )
 
-        print(
-            "Context:",
-            context_manager.context
-        )
-        
-        print(f"Executing on: {device}")
 
         if intent == "tell_time":       return tell_time()
         if intent == "world_time":
@@ -161,10 +157,10 @@ class Router:
         Or None if everything goes to LLM.
         """
 
-        command = resolve(command)
-        print("Resolved command:", command)
+        intents = classify_all(command, self._context_manager)
 
-        intents = classify_all(command)
+        if len(intents) == 1 and intents[0][0] in ["affirm", "negate"]:
+            return {"intent": intents[0][0]}
 
         intents = self.optimize_intents(intents)
         

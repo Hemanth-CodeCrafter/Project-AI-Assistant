@@ -1,7 +1,9 @@
 # core/intent_classifier.py
-import re
+from core.context_manager import ContextManager
 import spacy
+import re
 from rapidfuzz import fuzz
+
 
 nlp = spacy.load("en_core_web_sm")
 
@@ -163,6 +165,37 @@ def detect_device(text):
 
     return None
 
+
+def normalize_text_for_intents(text: str) -> str:
+    """Normalize common aliases and phrase variants before intent matching."""
+    normalized = (text or "").lower().strip()
+    normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    replacements = [
+        (r"\b(?:search|find|look|play|watch)\s+(?:on\s+)?yt\b", "youtube search"),
+        (r"\b(?:search|find|look|play|watch)\s+(?:on\s+)?youtube\b", "youtube search"),
+        (r"\b(?:search|find|look|play|watch)\s+(?:on\s+)?google\b", "google search"),
+        (r"\b(?:youtube|yt)\s+search\b", "youtube search"),
+        (r"\bsearch\s+(?:on\s+)?youtube\b", "youtube search"),
+        (r"\bfind\s+(?:on\s+)?youtube\b", "youtube search"),
+        (r"\bplay\s+(?:on\s+)?youtube\b", "youtube search"),
+        (r"\bgoogle\s+chrome\b", "chrome"),
+        (r"\bgoogle\s+maps\b", "maps"),
+        (r"\bvisual\s+studio\s+code\b", "vscode"),
+        (r"\bvs\s+code\b", "vscode"),
+        (r"\btext\s+editor\b", "notepad"),
+        (r"\bnote\s+pad\b", "notepad"),
+        (r"\bcalc\b", "calculator"),
+        (r"\bgoog\b", "google"),
+        (r"\byt\b", "youtube"),
+    ]
+
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized)
+
+    return re.sub(r"\s+", " ", normalized).strip()
+
 # ── Splitter ──────────────────────────────────────
 def split_into_commands(command: str):
     text  = command.lower().strip()
@@ -176,13 +209,13 @@ def split_into_commands(command: str):
     return parts if len(parts) > 1 else [text]
 
 # ── Context injector — Fix 3 ──────────────────────
-def inject_context(parts: list):
+def inject_context(parts: list, context_manager_instance: ContextManager):
     """
     Only injects context when command uses
     a search/play/watch verb.
     Prevents: 'tell me the time on youtube'
     """
-    current_context = None
+    current_context = context_manager_instance.get("app")
     enriched        = []
 
     for part in parts:
@@ -208,7 +241,7 @@ def inject_context(parts: list):
 
 # ── Single command classifier ─────────────────────
 def classify(command: str):
-    text   = command.lower().strip()
+    text   = normalize_text_for_intents(command)
     doc    = nlp(text)
     tokens = [t.lemma_.lower() for t in doc]
     ents   = extract_entities(doc)
@@ -369,9 +402,16 @@ def classify(command: str):
                           "turn off computer"]):
         return "shutdown_pc", None, ents
 
+    # ── Affirm / Negate ───────────────────────────
+    if fuzzy_match(text, ["yes", "yep", "yeah", "sure", "ok", "okay", "fine", "correct", "right", "tell me more", "more"]):
+        return "affirm", None, ents
+        
+    if fuzzy_match(text, ["no", "nope", "nah", "negative", "wrong", "incorrect"]):
+        return "negate", None, ents
+
     return None, None, ents
 def normalize_command(text: str):
-        text = text.lower().strip()
+        text = normalize_text_for_intents(text)
 
         replacements = {
             "open youtube search": "open youtube and search",
@@ -387,14 +427,14 @@ def normalize_command(text: str):
         return text
 
 # ── Multi-intent classifier ───────────────────────
-def classify_all(command: str):
+def classify_all(command: str, context_manager_instance: ContextManager):
     """
     Split → inject context → classify each part.
     Returns list of (intent, query, entities)
     """
     command = normalize_command(command)
     parts    = split_into_commands(command)
-    enriched = inject_context(parts)
+    enriched = inject_context(parts, context_manager_instance)
     results  = []
 
     print(f"\n  [multi-intent] {enriched}")

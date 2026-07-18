@@ -1,12 +1,15 @@
 import sqlite3
+from datetime import datetime
+from typing import Any, Optional
+
+from core.memory_record import MemoryRecord
 
 
 class MemoryDB:
 
     def __init__(self):
         self.conn = sqlite3.connect(
-            "jarvis_memory.db",
-            check_same_thread=False
+            "jarvis_memory.db"
         )
 
         self.cursor = self.conn.cursor()
@@ -25,15 +28,20 @@ class MemoryDB:
         self.conn.commit()
 
     def save(self, memory, category="general", importance=5):
+        record = memory if isinstance(memory, MemoryRecord) else MemoryRecord.from_legacy(
+            text=memory,
+            category=category,
+            importance=importance,
+        )
 
         self.cursor.execute("""
         INSERT OR IGNORE INTO memories
         (memory, category, importance)
         VALUES (?, ?, ?)
         """, (
-            memory,
-            category,
-            importance
+            record.text,
+            record.category,
+            record.importance,
         ))
 
         self.conn.commit()
@@ -78,5 +86,3 @@ class MemoryDB:
 
         self.conn.commit()
 
-
-memory_db = MemoryDB()

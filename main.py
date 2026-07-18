@@ -2,33 +2,17 @@
 import os
 import sys
 import time
-import pyttsx3
 import random
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
-from dotenv                   import load_dotenv
-from core.brain               import Brain
-from core.router              import Router
-from core.stt                 import SpeechToText
-from core.recorder            import Recorder
-from core.wake_word           import WakeWordDetector
-from core.conversation_memory import conversation_memory
-from core.memory_manager      import memory_manager
+from dotenv import load_dotenv
+from core.stt import SpeechToText
+from core.recorder import Recorder
+from core.wake_word import WakeWordDetector
+from core.tts import speak
+from services.command_processor import CommandProcessor, ProcessOptions
 
-
-# ── TTS — init ONCE, reuse ────────────────────────
-# Reinitializing every speak() call was causing lag
-'''
-engine = pyttsx3.init()
-engine.setProperty('rate', 165)
-voices = engine.getProperty('voices')
-engine.setProperty(
-    'voice',
-    voices[1].id if len(voices) > 1 else voices[0].id
-)
-engine.setProperty('volume', 1.0)
-'''
 # ── Response pools ────────────────────────────────
 GREETINGS = [
     "Yes sir!",
@@ -38,72 +22,40 @@ GREETINGS = [
     "How can I help?",
 ]
 
-
-
 FAREWELLS = [
     "Goodbye! Have a great day.",
     "See you soon sir.",
     "Take care. Goodbye!",
 ]
 
-# THINKING = [
-#     "Let me think...",
-#     "One moment...",
-#     "Sure, give me a second...",
-# ]
-
 SESSION_TIMEOUT = 30   # seconds of silence before returning to wake word
-AUDIO_PATH      = "data/recordings/command.wav"
+AUDIO_PATH = "data/recordings/command.wav"
 os.makedirs("data/recordings", exist_ok=True)
 
 load_dotenv()
 
-# ── TTS ───────────────────────────────────────────
-def speak(text):
-    engine = pyttsx3.init()
-    engine.setProperty('rate', 165)
-    voices = engine.getProperty('voices')
-    engine.setProperty(
-        'voice',
-        voices[1].id if len(voices) > 1 else voices[0].id
-    )
-    engine.setProperty('volume', 1.0)
-
-    if not text:
-        return
-    # Strip __LLM__ tags if they leak through
-    text = str(text).replace("__LLM__:", "").strip()
-    print(f"\n🤖 Jarvis: {text}")
-    engine.say(text)
-    engine.runAndWait()
-    engine.stop()
-
 # ── Init ──────────────────────────────────────────
 def initialize():
-    print("\n" + "="*45)
+    print("\n" + "=" * 45)
     print("       JARVIS - Personal AI Assistant")
-    print("="*45)
+    print("=" * 45)
 
-    print("\n[1/4] Loading speech recognition...")
+    print("\n[1/3] Loading speech recognition...")
     stt = SpeechToText()
 
-    print("[2/4] Loading recorder...")
+    print("[2/3] Loading recorder...")
     recorder = Recorder()
 
-    print("[3/4] Loading AI brain...")
-    brain = Brain()
-
-    print("[4/4] Loading router...")
-    router = Router()
+    print("[3/3] Loading command processor...")
+    processor = CommandProcessor()
 
     print("\n✅ All systems ready.\n")
-    return stt, recorder, brain, router
+    return stt, recorder, processor
 
 # ── Process one command ───────────────────────────
-def process_command(command, router, brain):
+def process_command(command, processor):
     """
-    Router handles known commands instantly.
-    Brain handles everything else.
+    Delegate command handling to the unified CommandProcessor.
     Returns response string.
     """
     if not command or len(command.strip()) < 2:
@@ -111,88 +63,8 @@ def process_command(command, router, brain):
 
     print(f"\n👤 You: {command}")
 
-    # Save important memories
-    memory_manager.remember(command)
-
-    # Search related memories
-    memories = memory_manager.search(command)
-    # Resolve follow-up questions
-    command = conversation_memory.resolve(command)
-
-    topic = conversation_memory.extract_topic(command)
-
-    if topic:
-        conversation_memory.set_topic(topic)
-
-    conversation_memory.add(command)
-
-    # Try router first — instant, no LLM
-    result = router.route(command)
-
-    if result is None:
-        # Nothing matched — send full command to LLM
-        if memories:
-
-            memory_text = "\n".join(
-                f"- {m[0]}"
-                for m in memories
-            )
-
-            prompt = f"""
-        Relevant memories:
-
-        {memory_text}
-
-        User:
-        {command}
-        """
-
-        else:
-            prompt = command
-
-        print("🤖 Sending to brain...")
-        #speak(random.choice(THINKING))
-        response = brain.think(command)
-        return response
-
-    # Router returned a dict with responses + llm_parts
-    responses = result.get("responses", [])
-    llm_parts = result.get("llm_parts", [])
-
-    # Handle any LLM parts from multi-intent
-    for part in llm_parts:
-        print(f"🤖 Brain handling: {part}")
-        #speak(random.choice(THINKING))
-        memories = memory_manager.search(part)
-
-        if memories:
-
-            memory_text = "\n".join(
-                f"- {m[0]}"
-                for m in memories
-            )
-
-            prompt = f"""
-        Relevant memories:
-
-        {memory_text}
-
-        User:
-        {part}
-        """
-
-        else:
-            prompt = part
-
-        llm_response = brain.think(prompt)
-        
-        if llm_response:
-            responses.append(llm_response)
-
-    if responses:
-        return " ".join(responses)
-
-    return None
+    result = processor.process(command, options=ProcessOptions.for_cli())
+    return result.cli_text
 
 # ── Is exit command ───────────────────────────────
 def is_exit(command):
@@ -204,7 +76,7 @@ def is_exit(command):
     return any(p in command.lower() for p in exit_phrases)
 
 # ── Wake word mode ────────────────────────────────
-def run_with_wakeword(stt, recorder, brain, router):
+def run_with_wakeword(stt, recorder, processor):
     """
     Continuously listens for wake word.
     After detection, stays in session until
@@ -219,7 +91,6 @@ def run_with_wakeword(stt, recorder, brain, router):
 
     while True:  # ← outer loop: always returns here
         try:
-
             # ── Wait for wake word ─────────────────
             print("💤 Waiting for wake word...")
             detected = wakeword.listen()
@@ -234,7 +105,6 @@ def run_with_wakeword(stt, recorder, brain, router):
 
             # ── Inner loop: active session ─────────
             while True:
-
                 # Check session timeout
                 idle = time.time() - last_activity
                 if idle > SESSION_TIMEOUT:
@@ -264,13 +134,11 @@ def run_with_wakeword(stt, recorder, brain, router):
                     break  # ← back to outer loop (wake word)
 
                 # Process command
-                response = process_command(
-                    command, router, brain
-                )
+                response = process_command(command, processor)
 
                 if response:
                     speak(response)
-                    last_activity = time.time() # reset timer
+                    last_activity = time.time()  # reset timer
 
                 # Stay in session — loop back for next command
 
@@ -280,7 +148,7 @@ def run_with_wakeword(stt, recorder, brain, router):
             try:
                 wakeword.close()
                 recorder.close()
-            except:
+            except Exception:
                 pass
             sys.exit(0)
 
@@ -291,9 +159,9 @@ def run_with_wakeword(stt, recorder, brain, router):
             # Outer loop continues — back to wake word
 
 # ── Text mode ─────────────────────────────────────
-def run_text_mode(brain, router):
+def run_text_mode(processor):
     """
-    Type commands — for testing router/brain
+    Type commands — for testing the command pipeline
     without needing mic or wake word.
     Continuous conversation — type 'exit' to quit.
     """
@@ -310,7 +178,7 @@ def run_text_mode(brain, router):
                 speak(random.choice(FAREWELLS))
                 break
 
-            response = process_command(command, router, brain)
+            response = process_command(command, processor)
             if response:
                 speak(response)
             else:
@@ -323,7 +191,7 @@ def run_text_mode(brain, router):
             print(f"❌ Error: {e}")
 
 # ── Voice mode ────────────────────────────────────
-def run_voice_mode(stt, recorder, brain, router):
+def run_voice_mode(stt, recorder, processor):
     """
     Press Enter to speak — no wake word needed.
     Good for testing voice pipeline.
@@ -349,7 +217,7 @@ def run_voice_mode(stt, recorder, brain, router):
                 speak(random.choice(FAREWELLS))
                 break
 
-            response = process_command(command, router, brain)
+            response = process_command(command, processor)
             if response:
                 speak(response)
             else:
@@ -369,14 +237,14 @@ if __name__ == "__main__":
     # python main.py text   → text mode (testing)
     # python main.py voice  → press enter to speak
 
-    mode = sys.argv[1] if len(sys.argv) > 1 else "wake"
-    #mode = "text"
+    #mode = sys.argv[1] if len(sys.argv) > 1 else "wake"
+    mode = "text"
 
-    stt, recorder, brain, router = initialize()
+    stt, recorder, processor = initialize()
 
     if mode == "text":
-        run_text_mode(brain, router)
+        run_text_mode(processor)
     elif mode == "voice":
-        run_voice_mode(stt, recorder, brain, router)
+        run_voice_mode(stt, recorder, processor)
     else:
-        run_with_wakeword(stt, recorder, brain, router)
+        run_with_wakeword(stt, recorder, processor)

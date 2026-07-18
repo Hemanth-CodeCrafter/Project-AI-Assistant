@@ -1,9 +1,13 @@
 import re
+from typing import Any
 
-from core.memory_db import memory_db
+from core.memory_db import MemoryDB
+from core.memory_record import MemoryRecord
 
 
 class MemoryManager:
+    def __init__(self, db: MemoryDB):
+        self._db = db
 
     def should_remember(self, text):
 
@@ -80,10 +84,14 @@ class MemoryManager:
 
         if score >= 7:
 
-            memory_db.save(
-                memory=text,
+            self._db.save(
+                memory=MemoryRecord.from_legacy(
+                    text=text,
+                    category=category,
+                    importance=score,
+                ),
                 category=category,
-                importance=score
+                importance=score,
             )
 
             print(
@@ -109,7 +117,7 @@ class MemoryManager:
                 continue
 
             results.extend(
-                memory_db.search(word)
+                self._db.search(word)
             )
 
         unique = []
@@ -128,11 +136,8 @@ class MemoryManager:
 
     def forget(self, memory):
 
-        memory_db.delete(memory)
+        self._db.delete(memory)
 
     def all(self):
 
-        return memory_db.get_all()
-
-
-memory_manager = MemoryManager()
+        return self._db.get_all()

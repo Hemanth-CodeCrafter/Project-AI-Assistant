@@ -14,8 +14,11 @@ from enum import Enum
 from typing import Any, Optional
 
 from core.brain import Brain
-from core.conversation_memory import ConversationMemory, conversation_memory
-from core.memory_manager import MemoryManager, memory_manager
+from core.context_manager import ContextManager
+from core.conversation_memory import ConversationMemory
+from core.memory_db import MemoryDB
+from core.memory_manager import MemoryManager
+from core.memory_service import MemoryService
 from core.router import Router
 
 logger = logging.getLogger(__name__)
@@ -50,7 +53,7 @@ class ProcessOptions:
     @classmethod
     def for_cli(cls) -> ProcessOptions:
         """Options matching the current ``main.py`` pipeline."""
-        return cls()
+        return cls(log_user_input=False)
 
     @classmethod
     def for_api(cls) -> ProcessOptions:
@@ -59,8 +62,8 @@ class ProcessOptions:
             client=ClientType.API,
             min_command_length=0,
             log_user_input=False,
-            apply_memory_pipeline=False,
-            resolve_llm_parts=False,
+            apply_memory_pipeline=True,
+            resolve_llm_parts=True,
         )
 
 
@@ -103,6 +106,9 @@ class CommandProcessor:
         brain: Optional[Brain] = None,
         memory: Optional[MemoryManager] = None,
         conversation: Optional[ConversationMemory] = None,
+        memory_db: Optional[MemoryDB] = None,
+        context_manager_instance: Optional[ContextManager] = None,
+        memory_service: Optional[MemoryService] = None,
     ) -> None:
         """
         Initialize the processor with injectable dependencies.
@@ -113,10 +119,25 @@ class CommandProcessor:
             memory: Long-term memory manager. Defaults to module singleton.
             conversation: Short-term conversation memory. Defaults to singleton.
         """
-        self._router = router or Router()
+        context_instance = context_manager_instance or ContextManager()
+        self._router = router or Router(context_manager=context_instance)
         self._brain = brain or Brain()
-        self._memory = memory or memory_manager
-        self._conversation = conversation or conversation_memory
+        
+        # If dependencies are not injected, create new instances.
+        # This is crucial for thread-safety in the API.
+        db_instance = memory_db or MemoryDB()
+        conversation_instance = conversation or ConversationMemory()
+        memory_instance = memory or MemoryManager(db=db_instance)
+
+        self._conversation = conversation_instance
+        self._memory = memory_instance
+
+        self._memory_service = memory_service or MemoryService(
+            memory_manager=self._memory,
+            memory_db=db_instance,
+            conversation_memory=self._conversation,
+            context_manager=context_instance,
+        )
 
     def process(
         self,
@@ -146,8 +167,47 @@ class CommandProcessor:
 
         logger.info("Processing command for client=%s", opts.client.value)
 
-        working_text, pre_route_memories = self._apply_memory_pipeline(text, opts)
+        working_text, pre_route_memories  = self._apply_memory_pipeline(text, opts)
+        memory_answer = self._memory_service.retrieve_best_memory(working_text)
+
+        if memory_answer:
+            if opts.client == ClientType.API:
+                return ProcessResult(
+                    api_response={
+                        "success": True,
+                        "source": "memory",
+                        "text": memory_answer,
+                        "intent": None,
+                        "action": None,
+                        "metadata": {},
+                    }
+                )
+
+            return ProcessResult(cli_text=memory_answer)
         route_result = self._router.route(working_text)
+
+        # If the user says "yes/no" to a question, we need to give the brain context.
+        if route_result and route_result.get("intent") in ["affirm", "negate"]:
+            history = self._memory_service.get_conversation_history()
+            # The current user's turn has been added with a None assistant response.
+            # We need to check the turn before that one.
+            if len(history) > 1:
+                previous_turn = history[-2]
+                last_assistant_message = previous_turn.get('assistant')
+                if last_assistant_message and last_assistant_message.endswith('?'):
+                    # The user is replying to a direct question from the assistant.
+                    # Synthesize a new command with full context for the brain.
+                    contextual_command = (
+                        f"The user replied '{working_text}' to your question: "
+                        f"'{last_assistant_message}'. Please respond appropriately."
+                    )
+                    working_text = contextual_command
+                    route_result = None  # Force brain fallback with the new context
+
+        if route_result is None and opts.client == ClientType.CLI:
+            resolved_followup = self._memory_service.resolve_reference(working_text)
+            if resolved_followup != working_text:
+                working_text = resolved_followup
 
         if opts.client == ClientType.API:
             return self._build_api_result(text, working_text, route_result, opts)
@@ -180,17 +240,17 @@ class CommandProcessor:
         """
         if not opts.apply_memory_pipeline:
             return command, []
+        
+        self._memory_service.remember(command)
+        memories = self._memory_service.retrieve(command)
 
-        self._memory.remember(command)
-        memories = self._memory.search(command)
-
-        resolved = self._conversation.resolve(command)
-        topic = self._conversation.extract_topic(resolved)
+        resolved = self._memory_service.resolve_reference(command)
+        topic = self._memory_service.extract_topic(resolved)
 
         if topic:
-            self._conversation.set_topic(topic)
+            self._memory_service.set_topic(topic)
 
-        self._conversation.add(resolved)
+        self._memory_service.add_conversation_turn(resolved)
 
         return resolved, memories
 
@@ -231,23 +291,19 @@ class CommandProcessor:
         """
         Fallback when the router returns ``None`` (pure LLM path).
 
-        Preserves existing client quirks:
-        - CLI builds a memory prompt but calls ``think(working_command)``
-        - API calls ``think(original_command)`` with no memory enrichment
+        Enriches the command with conversation memory before sending to brain.
         """
-        print("🤖 Sending to brain...")
+        print("Sending to brain...")
         logger.info("Router returned None; falling back to brain")
 
+        brain_input = working_command
         if opts.apply_memory_pipeline:
-            # main.py searches memories before resolve and reuses that list here.
+            # The memory pipeline is enabled, so we enrich the input with memories.
             memories = pre_route_memories or []
-            self._build_memory_prompt(working_command, memories)
+            brain_input = self._build_memory_prompt(working_command, memories)
 
-        brain_input = (
-            working_command
-            if opts.client == ClientType.CLI and opts.apply_memory_pipeline
-            else original_command
-        )
+        # Always use the enriched `brain_input` for all clients, which is based
+        # on the processed `working_command`.
         return self._brain.think(brain_input)
 
     # ------------------------------------------------------------------
@@ -263,12 +319,25 @@ class CommandProcessor:
     ) -> ProcessResult:
         """Build the string response expected by ``main.py``."""
         if route_result is None:
+            # direct_memory_reply = self._memory_service.retrieve_best_memory(working_command)
+            # if direct_memory_reply:
+            #     return ProcessResult(cli_text=direct_memory_reply)
+
             response = self._invoke_brain_full_command(
                 working_command,
                 working_command,
                 opts,
                 pre_route_memories=pre_route_memories,
             )
+            self._memory_service.add_conversation_turn(
+                user=working_command,
+                assistant=response,
+            )
+            self._memory_service.update_entities(response)
+            assistant_topic = self._memory_service.extract_topic(response)
+
+            if assistant_topic:
+                self._memory_service.set_topic(assistant_topic)
             return ProcessResult(cli_text=response)
 
         responses: list[str] = list(route_result.get("responses", []))
@@ -281,7 +350,21 @@ class CommandProcessor:
                     responses.append(llm_response)
 
         if responses:
-            return ProcessResult(cli_text=" ".join(responses))
+            assistant_reply = " ".join(responses)
+
+            self._memory_service.add_conversation_turn(
+                user=working_command,
+                assistant=assistant_reply,
+            )
+
+            self._memory_service.update_entities(assistant_reply)
+
+            assistant_topic = self._memory_service.extract_topic(assistant_reply)
+
+            if assistant_topic:
+                self._memory_service.set_topic(assistant_topic)
+
+            return ProcessResult(cli_text=assistant_reply)
 
         return ProcessResult(cli_text=None)
 
@@ -292,19 +375,83 @@ class CommandProcessor:
         route_result: Optional[dict[str, Any]],
         opts: ProcessOptions,
     ) -> ProcessResult:
-        """Build the JSON payload expected by ``api.py`` and the frontend."""
+        """
+        Build a standardized JSON response for HTTP clients.
+
+        Android should always receive the same response structure,
+        regardless of whether the Router or Brain handled the request.
+        """
+
+        # Router handled the command
         if route_result is not None:
             logger.debug("API router result: %s", route_result)
-            return ProcessResult(api_response=route_result)
 
+            response = {
+                "success": True,
+                "source": "router",
+                "text": "",
+                "intent": None,
+                "action": None,
+                "metadata": {},
+            }
+
+            # Preserve router response if it's already a dictionary
+            if isinstance(route_result, dict):
+                response["text"] = (
+                    route_result.get("response")
+                    or route_result.get("message")
+                    or route_result.get("text")
+                    or ""
+                )
+
+                response["intent"] = route_result.get("intent")
+                response["action"] = route_result.get("action")
+                response["metadata"] = route_result.get("metadata", {})
+
+            else:
+                response["text"] = str(route_result)
+            
+            assistant_reply = response["text"]
+
+            self._memory_service.add_conversation_turn(
+                user=working_text,
+                assistant=assistant_reply,
+            )
+
+            self._memory_service.update_entities(assistant_reply)
+
+            assistant_topic = self._memory_service.extract_topic(assistant_reply)
+
+            if assistant_topic:
+                self._memory_service.set_topic(assistant_topic)
+
+            return ProcessResult(api_response=response)
+
+        # Brain fallback
         reply = self._invoke_brain_full_command(
             original_text,
             working_text,
             opts,
         )
+        self._memory_service.add_conversation_turn(
+            user=working_text,
+            assistant=reply,
+        )
+
+        self._memory_service.update_entities(reply)
+
+        assistant_topic = self._memory_service.extract_topic(reply)
+
+        if assistant_topic:
+            self._memory_service.set_topic(assistant_topic)
+
         return ProcessResult(
             api_response={
+                "success": True,
                 "source": "brain",
-                "response": reply,
+                "text": reply,
+                "intent": None,
+                "action": None,
+                "metadata": {},
             }
         )
