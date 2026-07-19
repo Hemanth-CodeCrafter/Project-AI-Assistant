@@ -237,8 +237,8 @@ if __name__ == "__main__":
     # python main.py text   → text mode (testing)
     # python main.py voice  → press enter to speak
 
-    #mode = sys.argv[1] if len(sys.argv) > 1 else "wake"
-    mode = "text"
+    mode = sys.argv[1] if len(sys.argv) > 1 else "wake"
+    #mode = "text"
 
     stt, recorder, processor = initialize()
 

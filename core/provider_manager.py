@@ -1,4 +1,4 @@
-from core.providers.ollama_provider import OllamaProvider
+#from core.providers.ollama_provider import OllamaProvider
 from core.internet import is_connected
 from core.providers.gemini_provider import GeminiProvider
 from core.providers.groq_provider import GroqProvider
@@ -11,7 +11,7 @@ class ProviderManager:
             "gemini": GeminiProvider(),
             "groq": GroqProvider(),
             "openrouter": OpenRouterProvider(),
-            "ollama": OllamaProvider()
+            #"ollama": OllamaProvider()
         }
 
         self.current_provider = "gemini"
