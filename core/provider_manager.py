@@ -20,11 +20,12 @@ class ProviderManager:
 
         # No internet
         if not is_connected():
-            self.current_provider = "ollama"
+            # self.current_provider = "ollama"
 
-            return self.providers[
-                "ollama"
-            ].chat(prompt)
+            # return self.providers[
+            #     "ollama"
+            # ].chat(prompt)
+            return "No internet connection"
 
         # Internet available
         try:
